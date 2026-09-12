@@ -1,6 +1,24 @@
+const fs = require("fs");
+const path = require("path");
 const { spawn } = require("child_process");
 const ffmpegPath = require("ffmpeg-static");
 const ffprobePath = require("ffprobe-static").path;
+
+const FONTS_DIR = path.join(__dirname, "..", "assets", "fonts");
+const FONT_FAMILY = "DejaVu Sans";
+
+// ffmpeg-static не собран с фильтром drawtext, поэтому текст накладывается
+// через subtitles(libass): генерируем .srt на всю длительность ролика.
+function escapeSrtText(text) {
+  return String(text).replace(/\r?\n/g, " ").trim();
+}
+
+// Экранирование пути для встраивания в значение опции фильтра ffmpeg.
+function escapeFilterPath(value) {
+  return String(value).replace(/\\/g, "\\\\").replace(/:/g, "\\:").replace(/'/g, "\\'");
+}
+
+const ALIGNMENT_BY_POSITION = { top: 8, center: 5, bottom: 2 };
 
 function run(cmd, args) {
   return new Promise((resolve, reject) => {
@@ -144,4 +162,113 @@ async function mergeWithCrossfade(inputFiles, outputFile, transitionDuration = 0
   await run(ffmpegPath, args);
 }
 
-module.exports = { mergeWithCrossfade, probeDuration };
+/**
+ * Обрезает видео до заданной длительности (в секундах).
+ */
+async function trimToDuration(input, output, seconds) {
+  const hasAudio = await probeHasAudio(input);
+  const args = [
+    "-y",
+    "-i", input,
+    "-t", String(seconds),
+    "-c:v", "libx264",
+    "-preset", "veryfast",
+    "-crf", "20",
+    "-pix_fmt", "yuv420p",
+  ];
+  if (hasAudio) args.push("-c:a", "aac", "-b:a", "192k");
+  else args.push("-an");
+  args.push(output);
+  await run(ffmpegPath, args);
+}
+
+/**
+ * Накладывает текст на видео.
+ * @param {{content: string, position?: "top"|"center"|"bottom"}} textConfig
+ */
+async function applyTextOverlay(input, output, textConfig) {
+  const hasAudio = await probeHasAudio(input);
+  const { content, position = "bottom" } = textConfig;
+  const alignment = ALIGNMENT_BY_POSITION[position] || ALIGNMENT_BY_POSITION.bottom;
+
+  const srtPath = `${output}.srt`;
+  const srtContent = [
+    "1",
+    "00:00:00,000 --> 99:59:59,000",
+    escapeSrtText(content),
+    "",
+  ].join("\n");
+  fs.writeFileSync(srtPath, srtContent, "utf8");
+
+  const forceStyle = [
+    `FontName=${FONT_FAMILY}`,
+    "FontSize=28",
+    "PrimaryColour=&H00FFFFFF",
+    "BorderStyle=3",
+    "BackColour=&H80000000",
+    "Outline=0",
+    "Shadow=0",
+    `Alignment=${alignment}`,
+    "MarginV=40",
+  ].join(",");
+
+  const subtitlesFilter =
+    `subtitles='${escapeFilterPath(srtPath)}':fontsdir='${escapeFilterPath(FONTS_DIR)}':` +
+    `force_style='${forceStyle}'`;
+
+  const args = [
+    "-y",
+    "-i", input,
+    "-vf", subtitlesFilter,
+    "-c:v", "libx264",
+    "-preset", "veryfast",
+    "-crf", "20",
+    "-pix_fmt", "yuv420p",
+  ];
+  if (hasAudio) args.push("-c:a", "copy");
+  else args.push("-an");
+  args.push(output);
+
+  try {
+    await run(ffmpegPath, args);
+  } finally {
+    fs.rmSync(srtPath, { force: true });
+  }
+}
+
+/**
+ * Накладывает фоновую музыку на видео (с приглушением, если у видео уже есть звук).
+ */
+async function mixMusic(videoInput, musicInput, outputFile, { volume = 0.25 } = {}) {
+  const hasOriginalAudio = await probeHasAudio(videoInput);
+
+  const args = ["-y", "-i", videoInput, "-stream_loop", "-1", "-i", musicInput];
+  let filter;
+  if (hasOriginalAudio) {
+    filter =
+      `[1:a]volume=${volume}[music];` +
+      `[0:a][music]amix=inputs=2:duration=first:dropout_transition=2[aout]`;
+  } else {
+    filter = `[1:a]volume=${volume}[aout]`;
+  }
+  args.push(
+    "-filter_complex", filter,
+    "-map", "0:v",
+    "-map", "[aout]",
+    "-c:v", "copy",
+    "-c:a", "aac",
+    "-b:a", "192k",
+    "-shortest",
+    outputFile
+  );
+  await run(ffmpegPath, args);
+}
+
+module.exports = {
+  mergeWithCrossfade,
+  trimToDuration,
+  applyTextOverlay,
+  mixMusic,
+  probeDuration,
+  probeHasAudio,
+};

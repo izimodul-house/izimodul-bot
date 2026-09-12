@@ -1,0 +1,7 @@
+DejaVu Sans fonts, used for text overlays.
+
+DejaVu fonts are based on Bitstream Vera Sans and are released under a
+permissive license that allows redistribution and modification, including
+in commercial products, provided the copyright/license notice is retained.
+
+Full license text: https://dejavu-fonts.github.io/License.html
