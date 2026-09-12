@@ -13,8 +13,24 @@ function defaultSettings() {
   return {
     durationLimit: null, // секунды, null = без ограничения
     text: null, // { content, position } | null
+    textDraftPosition: "bottom", // позиция, выбранная в меню перед вводом текста
     musicPath: null, // путь к загруженному аудиофайлу | null
   };
+}
+
+// Ожидание свободного текста от пользователя после нажатия кнопки в меню.
+const pendingInput = new Map();
+
+function setPendingInput(chatId, data) {
+  pendingInput.set(chatId, data);
+}
+
+function getPendingInput(chatId) {
+  return pendingInput.get(chatId) || null;
+}
+
+function clearPendingInput(chatId) {
+  pendingInput.delete(chatId);
 }
 
 function getSettingsDir(chatId) {
@@ -82,4 +98,7 @@ module.exports = {
   updateSettings,
   clearSettings,
   getSettingsDir,
+  setPendingInput,
+  getPendingInput,
+  clearPendingInput,
 };
