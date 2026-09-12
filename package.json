@@ -1,0 +1,16 @@
+{
+  "name": "izimodul-bot",
+  "version": "1.0.0",
+  "description": "Telegram-бот для склейки коротких видеороликов в один мультик с плавными переходами (crossfade)",
+  "main": "src/index.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node src/index.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "ffmpeg-static": "^5.2.0",
+    "ffprobe-static": "^3.1.0",
+    "grammy": "^1.30.0"
+  }
+}
