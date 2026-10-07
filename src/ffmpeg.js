@@ -80,7 +80,43 @@ async function probeHasAudio(filePath) {
 }
 
 /**
+ * Размер кадра так, как его показывает плеер (с учётом поворота из метаданных:
+ * ffmpeg при декодировании сам разворачивает такие клипы).
+ */
+async function probeVideoSize(filePath) {
+  const args = ["-v", "error", "-select_streams", "v:0", "-show_streams", "-of", "json", filePath];
+  const stdout = await new Promise((resolve, reject) => {
+    const proc = spawn(ffprobePath, args);
+    let out = "";
+    let err = "";
+    proc.stdout.on("data", (c) => (out += c.toString()));
+    proc.stderr.on("data", (c) => (err += c.toString()));
+    proc.on("error", reject);
+    proc.on("close", (code) => {
+      if (code === 0) resolve(out);
+      else reject(new Error(`ffprobe exited with code ${code}\n${err}`));
+    });
+  });
+  const stream = (JSON.parse(stdout).streams || [])[0];
+  if (!stream || !stream.width || !stream.height) {
+    throw new Error(`В файле нет видеодорожки: ${filePath}`);
+  }
+  const sideData = (stream.side_data_list || []).find((s) => s.rotation !== undefined);
+  const rotation = Number(sideData ? sideData.rotation : (stream.tags || {}).rotate) || 0;
+  const rotated = Math.abs(rotation) % 180 === 90;
+  return rotated
+    ? { width: stream.height, height: stream.width }
+    : { width: stream.width, height: stream.height };
+}
+
+const OUTPUT_FPS = 30;
+const AUDIO_FORMAT = "aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo";
+
+/**
  * Склеивает список видеофайлов в один с плавными переходами (crossfade).
+ * Клипы могут быть разного размера и частоты кадров: все приводятся к размеру
+ * первого клипа (с чёрными полями) и к OUTPUT_FPS, иначе xfade не работает.
+ * Клипы без звука получают тишину, чтобы не терять звук остальных.
  * @param {string[]} inputFiles - пути к клипам в нужном порядке
  * @param {string} outputFile - путь для результата
  * @param {number} transitionDuration - длительность перехода в секундах
@@ -96,11 +132,18 @@ async function mergeWithCrossfade(inputFiles, outputFile, transitionDuration = 0
 
   const durations = [];
   const hasAudioFlags = [];
+  const sizes = [];
   for (const f of inputFiles) {
+    sizes.push(await probeVideoSize(f)); // заодно отсекает файлы без видео
     durations.push(await probeDuration(f));
     hasAudioFlags.push(await probeHasAudio(f));
   }
-  const allHaveAudio = hasAudioFlags.every(Boolean);
+  const withAudio = hasAudioFlags.some(Boolean);
+
+  // Итоговый кадр — по первому клипу; libx264 с yuv420p требует чётных сторон
+  const first = sizes[0];
+  const width = first.width - (first.width % 2);
+  const height = first.height - (first.height % 2);
 
   // Переход не может быть длиннее самого короткого клипа
   const shortest = Math.min(...durations);
@@ -112,22 +155,35 @@ async function mergeWithCrossfade(inputFiles, outputFile, transitionDuration = 0
   });
 
   const filterParts = [];
+  inputFiles.forEach((f, i) => {
+    filterParts.push(
+      `[${i}:v]scale=${width}:${height}:force_original_aspect_ratio=decrease:force_divisible_by=2,` +
+        `pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,fps=${OUTPUT_FPS},format=yuv420p[nv${i}]`
+    );
+    if (withAudio) {
+      // Звук подгоняем ровно под длительность клипа, чтобы не копился рассинхрон
+      const dur = durations[i].toFixed(3);
+      const source = hasAudioFlags[i] ? `[${i}:a]${AUDIO_FORMAT},apad` : `anullsrc=r=48000:cl=stereo,${AUDIO_FORMAT}`;
+      filterParts.push(`${source},atrim=end=${dur},asetpts=PTS-STARTPTS[na${i}]`);
+    }
+  });
+
   let cumulative = durations[0];
-  let lastVideoLabel = "0:v";
-  let lastAudioLabel = "0:a";
+  let lastVideoLabel = "nv0";
+  let lastAudioLabel = "na0";
 
   for (let i = 1; i < inputFiles.length; i++) {
     const offset = cumulative - d;
     const outV = `v${i}`;
     filterParts.push(
-      `[${lastVideoLabel}][${i}:v]xfade=transition=fade:duration=${d.toFixed(3)}:offset=${offset.toFixed(3)}[${outV}]`
+      `[${lastVideoLabel}][nv${i}]xfade=transition=fade:duration=${d.toFixed(3)}:offset=${offset.toFixed(3)}[${outV}]`
     );
     lastVideoLabel = outV;
 
-    if (allHaveAudio) {
+    if (withAudio) {
       const outA = `a${i}`;
       filterParts.push(
-        `[${lastAudioLabel}][${i}:a]acrossfade=d=${d.toFixed(3)}[${outA}]`
+        `[${lastAudioLabel}][na${i}]acrossfade=d=${d.toFixed(3)}[${outA}]`
       );
       lastAudioLabel = outA;
     }
@@ -138,7 +194,7 @@ async function mergeWithCrossfade(inputFiles, outputFile, transitionDuration = 0
   const filterComplex = filterParts.join(";");
 
   const mapArgs = ["-map", `[${lastVideoLabel}]`];
-  if (allHaveAudio) {
+  if (withAudio) {
     mapArgs.push("-map", `[${lastAudioLabel}]`);
   } else {
     mapArgs.push("-an");
@@ -154,7 +210,7 @@ async function mergeWithCrossfade(inputFiles, outputFile, transitionDuration = 0
     "-crf", "20",
     "-pix_fmt", "yuv420p",
   ];
-  if (allHaveAudio) {
+  if (withAudio) {
     args.push("-c:a", "aac", "-b:a", "192k");
   }
   args.push(outputFile);
@@ -271,4 +327,5 @@ module.exports = {
   mixMusic,
   probeDuration,
   probeHasAudio,
+  probeVideoSize,
 };

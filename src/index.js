@@ -13,7 +13,7 @@ const {
   getPendingInput,
   clearPendingInput,
 } = require("./sessions");
-const { mergeWithCrossfade, trimToDuration, applyTextOverlay, mixMusic } = require("./ffmpeg");
+const { renderClips } = require("./render");
 const {
   mainMenuText,
   mainMenuKeyboard,
@@ -85,28 +85,14 @@ async function renderVideo(ctx, transition = DEFAULT_TRANSITION) {
   const settings = getSettings(ctx.chat.id);
 
   try {
-    let current = path.join(session.dir, "01_merged.mp4");
-    await mergeWithCrossfade(session.clips, current, transition);
+    const result = await renderClips(session.clips, session.dir, {
+      transition,
+      text: settings.text,
+      durationLimit: settings.durationLimit,
+      musicPath: settings.musicPath,
+    });
 
-    if (settings.text) {
-      const next = path.join(session.dir, "02_text.mp4");
-      await applyTextOverlay(current, next, settings.text);
-      current = next;
-    }
-
-    if (settings.durationLimit) {
-      const next = path.join(session.dir, "03_trimmed.mp4");
-      await trimToDuration(current, next, settings.durationLimit);
-      current = next;
-    }
-
-    if (settings.musicPath) {
-      const next = path.join(session.dir, "04_music.mp4");
-      await mixMusic(current, settings.musicPath, next);
-      current = next;
-    }
-
-    await ctx.replyWithVideo(new InputFile(current), {
+    await ctx.replyWithVideo(new InputFile(result), {
       caption: "Готово! Вот твой мультик 🎬",
     });
     clearSession(ctx.chat.id);

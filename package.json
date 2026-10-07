@@ -5,7 +5,8 @@
   "main": "src/index.js",
   "type": "commonjs",
   "scripts": {
-    "start": "node src/index.js"
+    "start": "node src/index.js",
+    "merge": "node src/merge-cli.js"
   },
   "dependencies": {
     "dotenv": "^16.4.5",
